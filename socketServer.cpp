@@ -9,9 +9,26 @@
 #include <stdio.h>     
 #include <stdlib.h>     
 #include <iostream> 
+#include <string.h>
 #include <queue>  
+#include <netinet/in.h>
+#include <fcntl.h>
 
 typedef unsigned int IPADDRESS;	
+typedef int 				SOCKET_DESCRIPTOR;
+typedef struct sockaddr		SOCKADDR;
+typedef struct sockaddr_in	SOCKADDR_IN;
+typedef SOCKADDR *			LPSOCKADDR;
+
+#define INVALID_SOCKET		(-1)
+#define SOCKET_ERROR		(-1)
+#define WSAEWOULDBLOCK		EWOULDBLOCK
+#define WSAENOTCONN			ENOTCONN
+#define EnterCriticalSection(crit_sec_ptr)	pthread_mutex_lock(crit_sec_ptr)
+#define TryEnterCriticalSection(crit_sec_ptr)	(!pthread_mutex_trylock(crit_sec_ptr))
+#define LeaveCriticalSection(crit_sec_ptr)	pthread_mutex_unlock(crit_sec_ptr)
+#define DeleteCriticalSection(crit_sec_ptr)	pthread_mutex_destroy(crit_sec_ptr)
+#define Sleep(a) usleep((a)*1000)
 
 enum ErrorType {	ERR_NONE,				// Success - No error occurred.
 					ERR_MINOR_NOTE,
@@ -40,11 +57,7 @@ void InitializeCriticalSection(CRITICAL_SECTION *crit_sec_ptr){
 	*crit_sec_ptr = (CRITICAL_SECTION)PTHREAD_MUTEX_INITIALIZER;
 };
 
-#define EnterCriticalSection(crit_sec_ptr)	pthread_mutex_lock(crit_sec_ptr)
-#define TryEnterCriticalSection(crit_sec_ptr)	(!pthread_mutex_trylock(crit_sec_ptr))
-#define LeaveCriticalSection(crit_sec_ptr)	pthread_mutex_unlock(crit_sec_ptr)
-#define DeleteCriticalSection(crit_sec_ptr)	pthread_mutex_destroy(crit_sec_ptr)
-#define Sleep(a) usleep((a)*1000)
+
 
 
 bool Terminate = false;
@@ -92,21 +105,28 @@ class packet{
 		packet()=default;
 		~packet()=default;
 };
-typedef deque <TRANSFERCLIENT *, allocator<TRANSFERCLIENT *> > CLIENTLIST;
-typedef CLIENTLIST::iterator CLIENTLISTITERATOR;//for iteract in to the clientlist
 
 class client{
 	public:
 		client()=default;
-		~client()=default;
+		~client(){
+			//free memory
+			while (!inPackets.empty()) {
+				delete(inPackets.front());
+				inPackets.pop();
+			}
+		};
+	private:
+		SOCKET_DESCRIPTOR sockfd; //sock descriptor
+		std::queue< packet *> inPackets;
 };
 
 class socketServer{
 	public:
 		//public variables
 	   
-	    //SOCKET_DESCRIPTOR sockfd;
-        //SOCKADDR_IN my_addr;
+	    SOCKET_DESCRIPTOR sockfd; //sock descriptor
+        SOCKADDR_IN my_addr;
 		int mainThreadStatus;
 		int readThreadStatus;
 	    
@@ -130,6 +150,43 @@ class socketServer{
 			maxDescriptor=-1;
 			conections=0;
 		};	
+
+		~socketServer(){
+			if(sockfd!=INVALID_SOCKET){
+				close(sockfd);
+			};
+		}
+
+		ErrorType createListenSocket(int portNumber){
+			   
+			sockfd = socket(AF_INET, SOCK_STREAM, 0); // ¡Comprobar errores!
+			if(sockfd==INVALID_SOCKET){
+				perror("socket .\n");
+				exit(1);
+			}else{
+				printf("socket %d was created.\n",sockfd);
+			};
+			
+			fcntl(sockfd, F_SETFL, O_NONBLOCK);//non blocking socket
+
+			my_addr.sin_family = AF_INET;         // Ordenación de máquina
+			my_addr.sin_port = htons(portNumber);     // short, Ordenación de la red
+			my_addr.sin_addr.s_addr = INADDR_ANY; // Rellenar con mi dirección IP
+			memset(&(my_addr.sin_zero), '\0', 8); // Poner a cero el resto de la estructura
+
+			if(bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr))==INVALID_SOCKET){
+				perror("Bind.\n");
+				return ERR_ERROR;
+			};
+			
+			if(listen(sockfd, 10)==INVALID_SOCKET){
+				perror("Listen.\n");
+				return ERR_ERROR;
+			};//if
+			
+		
+			return ERR_NONE;
+		};//createListenSocket
 
 	private:
 		CRITICAL_SECTION  broadcastLock;
