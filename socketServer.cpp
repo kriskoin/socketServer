@@ -14,12 +14,16 @@
 #include <netinet/in.h>
 #include <fcntl.h>
 
+#include <thread> 
+#include <chrono> 
+
 typedef unsigned int IPADDRESS;	
 typedef int 				SOCKET_DESCRIPTOR;
 typedef struct sockaddr		SOCKADDR;
 typedef struct sockaddr_in	SOCKADDR_IN;
 typedef SOCKADDR *			LPSOCKADDR;
 
+#define PORT_NUMBER		7777
 #define INVALID_SOCKET		(-1)
 #define SOCKET_ERROR		(-1)
 #define WSAEWOULDBLOCK		EWOULDBLOCK
@@ -29,6 +33,13 @@ typedef SOCKADDR *			LPSOCKADDR;
 #define LeaveCriticalSection(crit_sec_ptr)	pthread_mutex_unlock(crit_sec_ptr)
 #define DeleteCriticalSection(crit_sec_ptr)	pthread_mutex_destroy(crit_sec_ptr)
 #define Sleep(a) usleep((a)*1000)
+
+#define WSAECONNRESET		ECONNRESET
+#define WSAECONNABORTED		ECONNABORTED
+#define WSAESHUTDOWN		ESHUTDOWN
+#define WSAEAGAIN			EAGAIN
+#define WSAEHOSTUNREACH		EHOSTUNREACH
+#define WSAEHOSTDOWN		EHOSTDOWN
 
 enum ErrorType {	ERR_NONE,				// Success - No error occurred.
 					ERR_MINOR_NOTE,
@@ -58,6 +69,7 @@ void InitializeCriticalSection(CRITICAL_SECTION *crit_sec_ptr){
 };
 
 
+inline int WSAGetLastError(void)  {return errno;}
 
 
 bool Terminate = false;
@@ -136,7 +148,7 @@ class socketServer{
 	
 		//public functions
 		socketServer(){
-			std::cout<<"Hola gato"<<std::endl;
+			//std::cout<<"Hola gato"<<std::endl;
 			InitializeCriticalSection(&broadcastLock);
 			InitializeCriticalSection(&socketsLock);
 			InitializeCriticalSection(&clientsLock);
@@ -149,53 +161,153 @@ class socketServer{
 			FD_ZERO(&read_fds);
 			maxDescriptor=-1;
 			conections=0;
+			
+			int err=createListenSocket(PORT_NUMBER);
+			if (err == ERR_NONE){
+				thAccepting = std::thread(&socketServer::acceptConnections2,this);  
+			}
 		};	
 
 		~socketServer(){
 			if(sockfd!=INVALID_SOCKET){
 				close(sockfd);
+				std::cout<<"Socket: "<< sockfd<<" closed"<<std::endl;
 			};
+			thAccepting.join();
+			std::cout<<"Socket server destructor called"<<std::endl;
 		}
 
-		ErrorType createListenSocket(int portNumber){
-			   
-			sockfd = socket(AF_INET, SOCK_STREAM, 0); // ¡Comprobar errores!
-			if(sockfd==INVALID_SOCKET){
-				perror("socket .\n");
-				exit(1);
-			}else{
-				printf("socket %d was created.\n",sockfd);
-			};
-			
-			fcntl(sockfd, F_SETFL, O_NONBLOCK);//non blocking socket
-
-			my_addr.sin_family = AF_INET;         // Ordenación de máquina
-			my_addr.sin_port = htons(portNumber);     // short, Ordenación de la red
-			my_addr.sin_addr.s_addr = INADDR_ANY; // Rellenar con mi dirección IP
-			memset(&(my_addr.sin_zero), '\0', 8); // Poner a cero el resto de la estructura
-
-			if(bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr))==INVALID_SOCKET){
-				perror("Bind.\n");
-				return ERR_ERROR;
-			};
-			
-			if(listen(sockfd, 10)==INVALID_SOCKET){
-				perror("Listen.\n");
-				return ERR_ERROR;
-			};//if
-			
 		
+		void  acceptConnections2(){
+			std::cout<<"Accepting thread here !!"<<std::endl;
+			//return ERR_NONE;
+		};
+
+		//NEW CONECTIONS
+		ErrorType  acceptConnections(){
+	
+			SOCKET_DESCRIPTOR newsock;
+			SOCKADDR_IN dest_addr;
+			int size;
+			size=sizeof(SOCKADDR_IN);
+
+			newsock=accept(sockfd, (sockaddr *)&dest_addr, (unsigned *)&size);
+			
+			if(newsock==INVALID_SOCKET){		
+				int err = WSAGetLastError();				
+				if (err == WSAEWOULDBLOCK || err == WSAECONNRESET) {
+					// Nobody is ready to connect yet.
+					return ERR_NONE;	// no error, but no connection either.
+				}else{
+					std::cout<<"Error on accepting new connections"<<std::endl;			  
+					exit(1);	
+				};//if(err==WSAEWOULDBLOCK || err==WSAECONNRESET)
+			}	
+			//}else{
+					
+				/*
+				fcntl(newsock, F_SETFL, O_NONBLOCK);//non blocking socket
+					
+				bool true_bool = true;
+				int err = setsockopt(newsock, IPPROTO_TCP, TCP_NODELAY, (char *)&true_bool, sizeof(true_bool));
+				if (err) {
+					printf("WARNING setsockopt() to disable nagle failed  WSA error = %d.\n", WSAGetLastError());		
+				};//if
+				//TRANFERCLIENT
+					
+				
+				TRANSFERCLIENT * client;
+				client=NULL;
+				client =new TRANSFERCLIENT(this);
+				if(!client){
+					printf("Cannot create a TRANSFERCLIENT object in AcceptConnection function. \n");
+					log->AddLog("Cannot create a TRANSFERCLIENT object in AcceptConnection function. \n");
+					shutdown(newsock, 2);	//20000325MB: shut down sending and receiving on the socket
+					closesocket(newsock);
+					#if USE_SSL
+						delete (tmpSocket);
+					#endif
+					exit(1);
+				};//if(!client)
+				
+				client->socket->socket =newsock;
+				
+				
+				
+				EnterCriticalSection(&descriptorsLock);		   	
+				//add socket to the master descriptors set
+				FD_SET(client->socket->socket, &master); 			
+				//actualiza el maximo descriptor
+				if(newsock>maxDescriptor){
+					maxDescriptor=newsock;
+				};
+				conections++;//increment the number of conections
+				LeaveCriticalSection(&descriptorsLock);
+				client->socket->conectedFlag =TRUE;
+				addSocket(client->socket);
+				addClient(client);
+				//get the remote ip Address
+				if(getpeername(client->socket->socket,(sockaddr *)&dest_addr,&size)){
+					perror("getpeername");
+				}else{
+					char name[25];
+						//inet_ntoa (dest_addr.sin_family, &dest_addr.sin_addr, client->socket->ipAddress , 20);
+						//name=inet_ntoa(dest_addr);
+						IP_ConvertIPtoString(dest_addr.sin_addr.s_addr, client->ipAddress, 20);
+						printf("\n\n\tNew connection from:%s\n",client->ipAddress);
+						log->AddLog("New connection from:%s\n",client->ipAddress);
+				};	
+					*/
+			//};//if(newsock==INVALID_SOCKET)
+			//printf("Pause.\n");
+			//getc(stdin);
+
 			return ERR_NONE;
-		};//createListenSocket
+			
+		};//AcceptConnection
+
 
 	private:
 		CRITICAL_SECTION  broadcastLock;
 		CRITICAL_SECTION  clientsLock;
 		CRITICAL_SECTION  socketsLock;
 	    CRITICAL_SECTION  descriptorsLock;
-		int maxDescriptor;//maximo descriptor para la funcion select
-	    fd_set master;   // conjunto maestro de descriptores de fichero
+		int maxDescriptor;//max descriptor number
+	    fd_set master;   // master set of descriptors descriptores de fichero
         fd_set read_fds; // conjunto temporal de descriptores de fichero para select()
+
+		std::thread thAccepting;
+
+		ErrorType createListenSocket(int portNumber){
+			   
+			sockfd = socket(AF_INET, SOCK_STREAM, 0); // ¡Comprobar errores!
+			if(sockfd==INVALID_SOCKET){	
+				std::cout<<"Error creating socket"<<std::endl;
+				exit(1);
+			}
+			std::cout<<"Socket "<<sockfd<<" created" <<std::endl;
+
+			fcntl(sockfd, F_SETFL, O_NONBLOCK);//non blocking socket
+			my_addr.sin_family = AF_INET;         // Ordenación de máquina
+			my_addr.sin_port = htons(portNumber);     // short, Ordenación de la red
+			my_addr.sin_addr.s_addr = INADDR_ANY; // Rellenar con mi dirección IP
+			memset(&(my_addr.sin_zero), '\0', 8); //
+
+			if(bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr))==INVALID_SOCKET){				
+				std::cout<< "Error on binding"<<std::endl;
+				exit(1);
+			};
+			
+			if(listen(sockfd, 10)==INVALID_SOCKET){
+				std::cout<< "Error on listing"<<std::endl;
+				exit(1);
+			};//if
+			
+			std::cout<<"Socket "<<sockfd<<" listing on port: "<< portNumber <<std::endl;
+			return ERR_NONE;
+		};//createListenSocket
+
+
 
 	  /*  ~socketServer();
 		ErrorType createListenSocket(int portNumber);
@@ -298,5 +410,5 @@ int main(){
 		Sleep(5);
 	};//while
 	std::cout<<"Bye!"<<std::endl;
-	return 0;
+	return ERR_NONE;
 }
