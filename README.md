@@ -1,4 +1,4 @@
 # socketServer
 a test socket server
 # compile
-g++ socketServer.cpp
+g++ socketServer.cpp -o server

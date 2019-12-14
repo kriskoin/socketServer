@@ -2,11 +2,14 @@
 #include <sys/sem.h>
 #include <sys/ipc.h>
 #include <sys/types.h>
+#include <sys/time.h>
+#include <sys/select.h>
 #include <unistd.h>
 #include <signal.h>
 #include <stdio.h>     
 #include <stdlib.h>     
 #include <iostream> 
+#include <queue>  
 
 typedef unsigned int IPADDRESS;	
 
@@ -21,11 +24,17 @@ enum ErrorType {	ERR_NONE,				// Success - No error occurred.
 					ERR_INTERNAL_ERROR,
 					ERR_FATAL_ERROR } ;
 
+
+enum THREAD_STATUS{ THREAD_STARTED,
+					THREAD_STOPED,
+					THREAD_EXIT	};
+
+
 //EnterCriticalSection(&socketsLock);
 //LeaveCriticalSection(&socketsLock);
 
 typedef pthread_mutex_t	CRITICAL_SECTION;
-typedef pthread_mutex_t	LOCK;
+
 
 void InitializeCriticalSection(CRITICAL_SECTION *crit_sec_ptr){
 	*crit_sec_ptr = (CRITICAL_SECTION)PTHREAD_MUTEX_INITIALIZER;
@@ -78,13 +87,24 @@ void OurSignalHandlerRoutine(int signal, struct sigcontext sc)
 	};//switch
 };//OurSignalHandlerRoutine
 
+class packet{
+	public:
+		packet()=default;
+		~packet()=default;
+};
+typedef deque <TRANSFERCLIENT *, allocator<TRANSFERCLIENT *> > CLIENTLIST;
+typedef CLIENTLIST::iterator CLIENTLISTITERATOR;//for iteract in to the clientlist
 
+class client{
+	public:
+		client()=default;
+		~client()=default;
+};
 
 class socketServer{
 	public:
 		//public variables
-	    //CDebugLog *log;
-		//CDebugLog *sockLog;
+	   
 	    //SOCKET_DESCRIPTOR sockfd;
         //SOCKADDR_IN my_addr;
 		int mainThreadStatus;
@@ -97,7 +117,29 @@ class socketServer{
 		//public functions
 		socketServer(){
 			std::cout<<"Hola gato"<<std::endl;
-		};		
+			InitializeCriticalSection(&broadcastLock);
+			InitializeCriticalSection(&socketsLock);
+			InitializeCriticalSection(&clientsLock);
+			InitializeCriticalSection(&descriptorsLock);
+			mainThreadStatus=THREAD_STOPED;
+			
+			// borra los conjuntos de descriptores
+			// maestro y temporal
+			FD_ZERO(&master);    
+			FD_ZERO(&read_fds);
+			maxDescriptor=-1;
+			conections=0;
+		};	
+
+	private:
+		CRITICAL_SECTION  broadcastLock;
+		CRITICAL_SECTION  clientsLock;
+		CRITICAL_SECTION  socketsLock;
+	    CRITICAL_SECTION  descriptorsLock;
+		int maxDescriptor;//maximo descriptor para la funcion select
+	    fd_set master;   // conjunto maestro de descriptores de fichero
+        fd_set read_fds; // conjunto temporal de descriptores de fichero para select()
+
 	  /*  ~socketServer();
 		ErrorType createListenSocket(int portNumber);
 		void closeSocket();
@@ -125,18 +167,13 @@ class socketServer{
 	private:
 		
 	    
-	    int maxDescriptor;//maximo descriptor para la funcion select
-	    fd_set master;   // conjunto maestro de descriptores de fichero
-        fd_set read_fds; // conjunto temporal de descriptores de fichero para select()
+	   
 		BROADCASTLIST broadcastList;
 		SOCKETLIST socketList;
 		CLIENTLIST clientList;
 	    SOCKETLISTITERATOR socketListIterator;
 		CLIENTLISTITERATOR clientListIterator;
-		CRITICAL_SECTION  broadcastLock;
-		CRITICAL_SECTION  clientsLock;
-		CRITICAL_SECTION  socketsLock;
-	    CRITICAL_SECTION  descriptorsLock;
+		
 	
 	    //private methods
 
