@@ -12,6 +12,7 @@
 #include <string.h>
 #include <queue>  
 #include <map> 
+#include <set>
 #include <netinet/in.h>
 #include <fcntl.h>
 
@@ -24,8 +25,12 @@ typedef struct sockaddr		SOCKADDR;
 typedef struct sockaddr_in	SOCKADDR_IN;
 typedef SOCKADDR *			LPSOCKADDR;
 
-#define BUFFER_SIZE		10 // size of the read buffer for recv function
+#define MAX_CONNECTIONS 15
 #define PORT_NUMBER		7777
+#define SOCKET_TTL 15000 //15seg before close an inactive socket
+
+#define BUFFER_SIZE		2 // size of the read buffer for recv function
+
 #define INVALID_SOCKET		(-1)
 #define SOCKET_ERROR		(-1)
 #define WSAEWOULDBLOCK		EWOULDBLOCK
@@ -71,6 +76,16 @@ void InitializeCriticalSection(CRITICAL_SECTION *crit_sec_ptr){
 	*crit_sec_ptr = (CRITICAL_SECTION)PTHREAD_MUTEX_INITIALIZER;
 };
 
+unsigned int GetTickCount(void){
+	struct timeval now;
+	gettimeofday(&now, NULL);
+	static unsigned int initial_ms_value;
+	if (!initial_ms_value) {
+		// We've never initialized the initial ms value. Do so now.
+		initial_ms_value = (now.tv_sec * 1000) + (now.tv_usec / 1000);
+	}
+	return (now.tv_sec * 1000) + (now.tv_usec / 1000) - initial_ms_value;
+};
 
 inline int WSAGetLastError(void)  {return errno;}
 
@@ -116,7 +131,9 @@ void OurSignalHandlerRoutine(int signal, struct sigcontext sc)
 };//OurSignalHandlerRoutine
 
 class packet{
+
 	public:
+		std::string msg;
 		packet()=default;
 		~packet()=default;
 };
@@ -168,17 +185,7 @@ class socketServer{
 			FD_ZERO(&read_fds);
 			maxDescriptor=-1;
 			conections=0;
-			
-			int err=createListenSocket(PORT_NUMBER);
-			Sleep(5);
-			if (err == ERR_NONE){
-				//launch threads
-				thAccepting = std::thread(&socketServer::acceptConnections,this);
-
-				thClientsRequests = std::thread(&socketServer::processClientsRequests,this);
-
-				  
-			}
+						
 		};	
 
 		~socketServer(){
@@ -226,6 +233,18 @@ class socketServer{
 			while (!exitFlag);
 			std::cout<<"Accept thread stoped !!"<<std::endl;
 		};
+
+		void start(int portNumber){
+			int err=createListenSocket(portNumber);
+			Sleep(5);
+			if (err == ERR_NONE){
+				//launch threads
+				thAccepting = std::thread(&socketServer::acceptConnections,this);
+
+				thClientsRequests = std::thread(&socketServer::processClientsRequests,this);
+				  
+			}
+		}
 
 		void stop(){
 			EnterCriticalSection(&lockStop);		   	
@@ -293,6 +312,7 @@ class socketServer{
 
 
 		void processClientsRequests(){
+			std::set<client *> clients;
 			int s;
 			int tmpMaxDescrip;
 			struct timeval tv;
@@ -318,7 +338,9 @@ class socketServer{
 							std::cout<<"Error on select  !!"<<std::endl;
 							exit(1);
 						};//if  
-						processSocketsInputRequest(&read_fds);
+						clients = getReadableSockets(&read_fds);
+						storeIncommingRequests(&clients);
+						clients.clear();
 					};
 				};
 				
@@ -379,51 +401,29 @@ class socketServer{
 		};//createListenSocket
 
 
-	inline void processSocketsInputRequest(fd_set *read_fds){
-		// int i;
-		//CSOCKET* s;	
-		//int p;
-		//p=0;
-		//printf("processSocketsInputRequest\n");
-		//socketListIterator=socketList.begin();
-		//printf("EnterCriticalSection processSocketsInputRequest .\n");
+	inline std::set<client *> getReadableSockets(fd_set *read_fds){
+		std::set<client *> clients;
 		EnterCriticalSection(&clientsLock);
 		for (auto x: clientsMap) {
-	
 			if(FD_ISSET(x.first,read_fds)){		
-				std::cout<<"Socket "<<x.first<<" says something "<<std::endl;
+				clients.insert(x.second);
 			}
 		}
-		/*
-		for(int i=0;i<(int)socketList.size();i++){
-			s=socketList.at(i);
-			//if((FD_ISSET(s->socket,read_fds))&&(!s->ttl)){		 		 
-			if(FD_ISSET(s->socket,read_fds)){		 		 
-				#if USE_STRUCT
-				//log->AddLog ("Before readPacket \n");
-				//processSocket2(s);
-				readPacket(s);
-				//log->AddLog ("After readPacket \n");
-				#else
-				//log->AddLog ("Before processSocket \n");
-				//processSocket(s);
-				//log->AddLog ("After processSocket \n");
-				#endif
-				p++;		
-			}; //if(FD_ISSET(s->socket,read_fds))
-			socketListIterator++;
-		};//for
-		*/
 		LeaveCriticalSection(&clientsLock);  
-		//printf("LeaveCriticalSection processSocketsInputRequest.\n");
-		//printf("%d Sockets procesed.\n",p);
-		//log->AddLog("%d Sockets procesed.\n",p);
-	};// processSocketsInputRequest
+		return clients;
+	};// 
+
+	inline void storeIncommingRequests(std::set<client *> * clients){
+		char recv_buffer[BUFFER_SIZE];
+		int received;
+		for (auto x: *clients) {
+			
+			int received = recv(x->socket, recv_buffer, BUFFER_SIZE, 0);
+			std::cout<<"Socket "<<x->socket<<" sent: "<<received<<" bytes msg: "<<recv_buffer<<std::endl;
+		}
+	}
 	    
 };
-
-
-
 
 int main(){
 	signal(SIGHUP,  (void (*)(int))OurSignalHandlerRoutine);
@@ -437,7 +437,7 @@ int main(){
 	signal(SIGPIPE, SIG_IGN);	// ignore broken pipe signals (socket disconnects cause SIGPIPE)
 
     socketServer server;
-
+	server.start(PORT_NUMBER);
 	while(!Terminate){				
        // printf("Main thread.\n");
 		Sleep(5);
