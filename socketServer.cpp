@@ -11,6 +11,7 @@
 #include <iostream> 
 #include <string.h>
 #include <queue>  
+#include <map> 
 #include <netinet/in.h>
 #include <fcntl.h>
 
@@ -120,16 +121,20 @@ class packet{
 
 class client{
 	public:
+		SOCKET_DESCRIPTOR socket; //sock descriptor
+		bool conectedFlag = false;
 		client()=default;
 		~client(){
+			//close socket
+			close(socket);
 			//free memory
 			while (!inPackets.empty()) {
 				delete(inPackets.front());
 				inPackets.pop();
 			}
 		};
+
 	private:
-		SOCKET_DESCRIPTOR sockfd; //sock descriptor
 		std::queue< packet *> inPackets;
 };
 
@@ -149,7 +154,7 @@ class socketServer{
 		//public functions
 		socketServer(){
 			//std::cout<<"Hola gato"<<std::endl;
-			InitializeCriticalSection(&broadcastLock);
+			InitializeCriticalSection(&lockStop);
 			InitializeCriticalSection(&socketsLock);
 			InitializeCriticalSection(&clientsLock);
 			InitializeCriticalSection(&descriptorsLock);
@@ -169,27 +174,71 @@ class socketServer{
 		};	
 
 		~socketServer(){
+
+			thAccepting.join();
+			
 			if(sockfd!=INVALID_SOCKET){
 				close(sockfd);
 				std::cout<<"Socket: "<< sockfd<<" closed"<<std::endl;
 			};
-			thAccepting.join();
+			
+
+			//clean all open client connections
+			EnterCriticalSection(&clientsLock);
+			EnterCriticalSection(&descriptorsLock);	
+
+			for (auto x: clientsMap) {
+				FD_CLR(x.second->socket, &master); 
+		        conections--;
+				delete(x.second);
+			}
+			clientsMap.clear();
+			
+			LeaveCriticalSection(&descriptorsLock);
+			LeaveCriticalSection(&clientsLock);
+			
+
+		
 			std::cout<<"Socket server destructor called"<<std::endl;
 		}
 
 		
 		void  acceptConnections2(){
-			std::cout<<"Accepting thread here !!"<<std::endl;
-			//return ERR_NONE;
+			bool exitFlag= false;
+			
+			do{
+				//std::cout<<"Accepting thread here !!"<<std::endl;
+				acceptConnections();
+
+				EnterCriticalSection(&lockStop);		   	
+				exitFlag = this->stopFlag;
+				LeaveCriticalSection(&lockStop);
+				Sleep(1);
+
+			} 
+			while (!exitFlag);
+			std::cout<<"Accept thread stoped !!"<<std::endl;
+		};
+
+		void stop(){
+			EnterCriticalSection(&lockStop);		   	
+				this->stopFlag = true;
+			LeaveCriticalSection(&lockStop);
 		};
 
 		//NEW CONECTIONS
 		ErrorType  acceptConnections(){
-	
+	        	client * newClient;
 			SOCKET_DESCRIPTOR newsock;
 			SOCKADDR_IN dest_addr;
 			int size;
 			size=sizeof(SOCKADDR_IN);
+
+			newClient = new client();
+			if(!newClient){
+				std::cout<<"Cannot create a client object"<<std::endl;
+				exit(1);
+			};//
 
 			newsock=accept(sockfd, (sockaddr *)&dest_addr, (unsigned *)&size);
 			
@@ -203,72 +252,45 @@ class socketServer{
 					exit(1);	
 				};//if(err==WSAEWOULDBLOCK || err==WSAECONNRESET)
 			}	
-			//}else{
-					
-				/*
-				fcntl(newsock, F_SETFL, O_NONBLOCK);//non blocking socket
-					
-				bool true_bool = true;
-				int err = setsockopt(newsock, IPPROTO_TCP, TCP_NODELAY, (char *)&true_bool, sizeof(true_bool));
-				if (err) {
-					printf("WARNING setsockopt() to disable nagle failed  WSA error = %d.\n", WSAGetLastError());		
-				};//if
-				//TRANFERCLIENT
-					
-				
-				TRANSFERCLIENT * client;
-				client=NULL;
-				client =new TRANSFERCLIENT(this);
-				if(!client){
-					printf("Cannot create a TRANSFERCLIENT object in AcceptConnection function. \n");
-					log->AddLog("Cannot create a TRANSFERCLIENT object in AcceptConnection function. \n");
-					shutdown(newsock, 2);	//20000325MB: shut down sending and receiving on the socket
-					closesocket(newsock);
-					#if USE_SSL
-						delete (tmpSocket);
-					#endif
-					exit(1);
-				};//if(!client)
-				
-				client->socket->socket =newsock;
-				
-				
-				
-				EnterCriticalSection(&descriptorsLock);		   	
-				//add socket to the master descriptors set
-				FD_SET(client->socket->socket, &master); 			
-				//actualiza el maximo descriptor
-				if(newsock>maxDescriptor){
-					maxDescriptor=newsock;
-				};
-				conections++;//increment the number of conections
-				LeaveCriticalSection(&descriptorsLock);
-				client->socket->conectedFlag =TRUE;
-				addSocket(client->socket);
-				addClient(client);
-				//get the remote ip Address
-				if(getpeername(client->socket->socket,(sockaddr *)&dest_addr,&size)){
-					perror("getpeername");
-				}else{
-					char name[25];
-						//inet_ntoa (dest_addr.sin_family, &dest_addr.sin_addr, client->socket->ipAddress , 20);
-						//name=inet_ntoa(dest_addr);
-						IP_ConvertIPtoString(dest_addr.sin_addr.s_addr, client->ipAddress, 20);
-						printf("\n\n\tNew connection from:%s\n",client->ipAddress);
-						log->AddLog("New connection from:%s\n",client->ipAddress);
-				};	
-					*/
-			//};//if(newsock==INVALID_SOCKET)
-			//printf("Pause.\n");
-			//getc(stdin);
 
+			fcntl(newsock, F_SETFL, O_NONBLOCK);//non blocking socket
+			//TODO: nagle stuff
+			//bool true_bool = true;
+			//int err = setsockopt(newsock, IPPROTO_TCP, TCP_NODELAY, (char *)&true_bool, sizeof(true_bool));
+			//if (err) {
+			//	printf("WARNING setsockopt() to disable nagle failed  WSA error = %d.\n", WSAGetLastError());		
+			//};//if
+
+			newClient->socket = newsock;
+			newClient->conectedFlag = true;
+			
+			EnterCriticalSection(&clientsLock);
+			EnterCriticalSection(&descriptorsLock);	
+
+			//add socket to the master descriptors set
+			FD_SET(newClient->socket, &master); 			
+			//actualiza el maximo descriptor
+			if(newsock>maxDescriptor){
+				maxDescriptor=newsock;
+			};
+			conections++;//increment the number of conections
+			clientsMap.insert(std::pair<SOCKET_DESCRIPTOR,client *>(newClient->socket,newClient));
+		
+			LeaveCriticalSection(&descriptorsLock);
+			LeaveCriticalSection(&clientsLock);
+			
+				
+			
+			
+					
+			std::cout<<"New Connection detected"<<std::endl;
 			return ERR_NONE;
 			
 		};//AcceptConnection
 
 
 	private:
-		CRITICAL_SECTION  broadcastLock;
+		CRITICAL_SECTION  lockStop;
 		CRITICAL_SECTION  clientsLock;
 		CRITICAL_SECTION  socketsLock;
 	    CRITICAL_SECTION  descriptorsLock;
@@ -277,6 +299,10 @@ class socketServer{
         fd_set read_fds; // conjunto temporal de descriptores de fichero para select()
 
 		std::thread thAccepting;
+
+		bool stopFlag = false;
+
+		std::map<SOCKET_DESCRIPTOR,client *> clientsMap;
 
 		ErrorType createListenSocket(int portNumber){
 			   
@@ -409,6 +435,7 @@ int main(){
        // printf("Main thread.\n");
 		Sleep(5);
 	};//while
+	server.stop();
 	std::cout<<"Bye!"<<std::endl;
 	return ERR_NONE;
 }
