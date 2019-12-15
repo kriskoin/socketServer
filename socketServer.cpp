@@ -24,6 +24,7 @@ typedef struct sockaddr		SOCKADDR;
 typedef struct sockaddr_in	SOCKADDR_IN;
 typedef SOCKADDR *			LPSOCKADDR;
 
+#define BUFFER_SIZE		10 // size of the read buffer for recv function
 #define PORT_NUMBER		7777
 #define INVALID_SOCKET		(-1)
 #define SOCKET_ERROR		(-1)
@@ -34,6 +35,7 @@ typedef SOCKADDR *			LPSOCKADDR;
 #define LeaveCriticalSection(crit_sec_ptr)	pthread_mutex_unlock(crit_sec_ptr)
 #define DeleteCriticalSection(crit_sec_ptr)	pthread_mutex_destroy(crit_sec_ptr)
 #define Sleep(a) usleep((a)*1000)
+#define zstruct(a)	memset(&(a),0,sizeof(a))
 
 #define WSAECONNRESET		ECONNRESET
 #define WSAECONNABORTED		ECONNABORTED
@@ -80,7 +82,7 @@ void OurSignalHandlerRoutine(int signal, struct sigcontext sc)
 	switch (signal) {
 	case SIGTERM:
 		Terminate=true;
-		printf("SIGTERM proccesed ! .\n");
+		std::cout<<"SIGTERM proccesed !"<<std::endl;
 		break;
 	case SIGHUP:
 
@@ -162,21 +164,29 @@ class socketServer{
 			
 			// borra los conjuntos de descriptores
 			// maestro y temporal
-			FD_ZERO(&master);    
+			FD_ZERO(&masterDesciptors);    
 			FD_ZERO(&read_fds);
 			maxDescriptor=-1;
 			conections=0;
 			
 			int err=createListenSocket(PORT_NUMBER);
+			Sleep(5);
 			if (err == ERR_NONE){
-				thAccepting = std::thread(&socketServer::acceptConnections2,this);  
+				//launch threads
+				thAccepting = std::thread(&socketServer::acceptConnections,this);
+
+				thClientsRequests = std::thread(&socketServer::processClientsRequests,this);
+
+				  
 			}
 		};	
 
 		~socketServer(){
 
 			thAccepting.join();
-			
+
+			thClientsRequests.join();
+
 			if(sockfd!=INVALID_SOCKET){
 				close(sockfd);
 				std::cout<<"Socket: "<< sockfd<<" closed"<<std::endl;
@@ -188,7 +198,7 @@ class socketServer{
 			EnterCriticalSection(&descriptorsLock);	
 
 			for (auto x: clientsMap) {
-				FD_CLR(x.second->socket, &master); 
+				FD_CLR(x.second->socket, &masterDesciptors); 
 		        conections--;
 				delete(x.second);
 			}
@@ -203,18 +213,15 @@ class socketServer{
 		}
 
 		
-		void  acceptConnections2(){
+		void  acceptConnections(){
 			bool exitFlag= false;
 			
 			do{
-				//std::cout<<"Accepting thread here !!"<<std::endl;
-				acceptConnections();
-
+				acceptNewClients();
 				EnterCriticalSection(&lockStop);		   	
 				exitFlag = this->stopFlag;
 				LeaveCriticalSection(&lockStop);
 				Sleep(1);
-
 			} 
 			while (!exitFlag);
 			std::cout<<"Accept thread stoped !!"<<std::endl;
@@ -227,8 +234,8 @@ class socketServer{
 		};
 
 		//NEW CONECTIONS
-		ErrorType  acceptConnections(){
-	        	client * newClient;
+		ErrorType  acceptNewClients(){
+	        client * newClient;
 			SOCKET_DESCRIPTOR newsock;
 			SOCKADDR_IN dest_addr;
 			int size;
@@ -268,7 +275,7 @@ class socketServer{
 			EnterCriticalSection(&descriptorsLock);	
 
 			//add socket to the master descriptors set
-			FD_SET(newClient->socket, &master); 			
+			FD_SET(newClient->socket, &masterDesciptors); 			
 			//actualiza el maximo descriptor
 			if(newsock>maxDescriptor){
 				maxDescriptor=newsock;
@@ -278,10 +285,6 @@ class socketServer{
 		
 			LeaveCriticalSection(&descriptorsLock);
 			LeaveCriticalSection(&clientsLock);
-			
-				
-			
-			
 					
 			std::cout<<"New Connection detected"<<std::endl;
 			return ERR_NONE;
@@ -289,16 +292,58 @@ class socketServer{
 		};//AcceptConnection
 
 
+		void processClientsRequests(){
+			int s;
+			int tmpMaxDescrip;
+			struct timeval tv;
+			bool exitFlag= false;
+			
+			do{
+
+				if(conections){		
+					zstruct(tv);
+					tv.tv_sec =0;
+					//tv.tv_usec =0.2;
+					tv.tv_usec = 125000;	// 125ms timeout
+					//tv.tv_usec = 200;	// 125ms timeout
+					FD_ZERO(&read_fds);  
+					EnterCriticalSection(&descriptorsLock);
+					read_fds = masterDesciptors;
+					tmpMaxDescrip=maxDescriptor+1;		  
+					LeaveCriticalSection(&descriptorsLock);	
+					//whichs sockets have something to read	??
+					if(conections>0){   //conections++
+						s=select(tmpMaxDescrip, &read_fds, NULL, NULL, &tv);
+						if(s==-1){
+							std::cout<<"Error on select  !!"<<std::endl;
+							exit(1);
+						};//if  
+						processSocketsInputRequest(&read_fds);
+					};
+				};
+				
+				EnterCriticalSection(&lockStop);		   	
+				exitFlag = this->stopFlag;
+				LeaveCriticalSection(&lockStop);
+				//Sleep(1);
+			} 
+			while (!exitFlag);
+			std::cout<<"read clients requests thread stoped !!"<<std::endl;
+		};
+
+		
+
 	private:
 		CRITICAL_SECTION  lockStop;
 		CRITICAL_SECTION  clientsLock;
 		CRITICAL_SECTION  socketsLock;
 	    CRITICAL_SECTION  descriptorsLock;
 		int maxDescriptor;//max descriptor number
-	    fd_set master;   // master set of descriptors descriptores de fichero
+	    fd_set masterDesciptors;   // master set of descriptors descriptores de fichero
         fd_set read_fds; // conjunto temporal de descriptores de fichero para select()
 
 		std::thread thAccepting;
+		std::thread thClientsRequests;
 
 		bool stopFlag = false;
 
@@ -334,84 +379,46 @@ class socketServer{
 		};//createListenSocket
 
 
-
-	  /*  ~socketServer();
-		ErrorType createListenSocket(int portNumber);
-		void closeSocket();
-	    
-	  
-	    void mainThread();
-		void readThread();
-		
-		ErrorType startService(int port);
-		void stopService();
-		void stopReadThread();
-		void pauseService();
-		
+	inline void processSocketsInputRequest(fd_set *read_fds){
+		// int i;
+		//CSOCKET* s;	
+		//int p;
+		//p=0;
+		//printf("processSocketsInputRequest\n");
+		//socketListIterator=socketList.begin();
+		//printf("EnterCriticalSection processSocketsInputRequest .\n");
+		EnterCriticalSection(&clientsLock);
+		for (auto x: clientsMap) {
 	
-		
-	    void addClient(TRANSFERCLIENT *client);
-		void addSocket(CSOCKET* sock);
-		void removeSocket(CSOCKET* sock);
-
-		
-		
-		
-		void sendBuffer(char* b,int buffSize,SOCKET_DESCRIPTOR source);//test
-		
-	private:
-		
-	    
-	   
-		BROADCASTLIST broadcastList;
-		SOCKETLIST socketList;
-		CLIENTLIST clientList;
-	    SOCKETLISTITERATOR socketListIterator;
-		CLIENTLISTITERATOR clientListIterator;
-		
-	
-	    //private methods
-
-		//main thread
-		ErrorType startMainThread();
-		void startReadThread();
-		
-		void stopMainThread();
-
-		void processClientList();
-	    
-	    inline void processSocket(CSOCKET* s);
-		inline void processSocket2(CSOCKET* s);
-		//I/O
-	    void processSocketsOutputList();
-		void processSocketInputList();
-		void processBroadcastMessages();
-		void addBroadcastMessage(CPACKET *packet,CSOCKET *source);
-		//I
-		inline void processSocketsInputRequest(fd_set *read_fds);
-		//O
-		inline void processSocketOutputQueue(CSOCKET *s);
-
-		//new conections
-		ErrorType acceptConnection(SOCKET_DESCRIPTOR sockServer);
-
-	    #if USE_SSL
-		 inline ErrorType  SSL_readSocket(CSOCKET* s,char * buff,int bufSize,int* realBytesRead);
-		 inline ErrorType SSL_sendSocket(SSL *ssl,char *buff,int buffSize);
-        #else
-		 inline ErrorType readSocket(CSOCKET* s,char * buff,int bufSize,int* realBytesRead);
-		 inline ErrorType sendSocket(SOCKET_DESCRIPTOR sock,char *buff,int buffSize);
-        #endif
-
-		void shutDownClient(TRANSFERCLIENT *client);
-		void removeClient(TRANSFERCLIENT *client);
-
-		void handleLostConecction(CSOCKET* s);
-			    		    
-	    void cleanSocketList();
-		void cleanClientList();
-		ErrorType readPacket(CSOCKET* s);
-	    */
+			if(FD_ISSET(x.first,read_fds)){		
+				std::cout<<"Socket "<<x.first<<" says something "<<std::endl;
+			}
+		}
+		/*
+		for(int i=0;i<(int)socketList.size();i++){
+			s=socketList.at(i);
+			//if((FD_ISSET(s->socket,read_fds))&&(!s->ttl)){		 		 
+			if(FD_ISSET(s->socket,read_fds)){		 		 
+				#if USE_STRUCT
+				//log->AddLog ("Before readPacket \n");
+				//processSocket2(s);
+				readPacket(s);
+				//log->AddLog ("After readPacket \n");
+				#else
+				//log->AddLog ("Before processSocket \n");
+				//processSocket(s);
+				//log->AddLog ("After processSocket \n");
+				#endif
+				p++;		
+			}; //if(FD_ISSET(s->socket,read_fds))
+			socketListIterator++;
+		};//for
+		*/
+		LeaveCriticalSection(&clientsLock);  
+		//printf("LeaveCriticalSection processSocketsInputRequest.\n");
+		//printf("%d Sockets procesed.\n",p);
+		//log->AddLog("%d Sockets procesed.\n",p);
+	};// processSocketsInputRequest
 	    
 };
 
