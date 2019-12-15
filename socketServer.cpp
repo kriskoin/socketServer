@@ -14,6 +14,7 @@
 #include <map> 
 #include <set>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <fcntl.h>
 
 #include <thread> 
@@ -29,7 +30,7 @@ typedef SOCKADDR *			LPSOCKADDR;
 #define PORT_NUMBER		7777
 #define SOCKET_TTL 15000 //15seg before close an inactive socket
 
-#define BUFFER_SIZE		2 // size of the read buffer for recv function
+#define BUFFER_SIZE		3 // size of the read buffer for recv function
 
 #define INVALID_SOCKET		(-1)
 #define SOCKET_ERROR		(-1)
@@ -66,8 +67,7 @@ enum THREAD_STATUS{ THREAD_STARTED,
 					THREAD_EXIT	};
 
 
-//EnterCriticalSection(&socketsLock);
-//LeaveCriticalSection(&socketsLock);
+
 
 typedef pthread_mutex_t	CRITICAL_SECTION;
 
@@ -134,7 +134,7 @@ class packet{
 
 	public:
 		std::string msg;
-		packet()=default;
+		packet(std::string amsg){msg=amsg;};
 		~packet()=default;
 };
 
@@ -153,8 +153,31 @@ class client{
 			}
 		};
 
+		void readData(){
+			char buffer[BUFFER_SIZE];
+			
+			int received = 0;
+			
+		    memset(buffer ,0 , BUFFER_SIZE);	//clear the variable
+			received =  recv(socket , buffer , BUFFER_SIZE , 0);
+			if(received){
+					packetSize=packetSize+received;
+					msg.append(buffer);
+				
+				if(buffer[received-1]=='\n'){
+					std::cout<<"Fin detectado "<<std::endl;
+					std::cout<<"Socket: "<< socket<<" envio: "<<msg<<" bytes: "<<packetSize<<std::endl;	
+					packetSize=0;
+					msg.clear();
+				}
+			}
+			
+		}
+
 	private:
 		std::queue< packet *> inPackets;
+		std::string msg;
+		int packetSize=0;
 };
 
 class socketServer{
@@ -168,11 +191,8 @@ class socketServer{
 	    
 	    int conections;//Num active conections
 	
-	    
-	
 		//public functions
 		socketServer(){
-			//std::cout<<"Hola gato"<<std::endl;
 			InitializeCriticalSection(&lockStop);
 			InitializeCriticalSection(&socketsLock);
 			InitializeCriticalSection(&clientsLock);
@@ -281,11 +301,11 @@ class socketServer{
 
 			fcntl(newsock, F_SETFL, O_NONBLOCK);//non blocking socket
 			//TODO: nagle stuff
-			//bool true_bool = true;
-			//int err = setsockopt(newsock, IPPROTO_TCP, TCP_NODELAY, (char *)&true_bool, sizeof(true_bool));
-			//if (err) {
-			//	printf("WARNING setsockopt() to disable nagle failed  WSA error = %d.\n", WSAGetLastError());		
-			//};//if
+			bool true_bool = true;
+			int err = setsockopt(newsock, IPPROTO_TCP, TCP_NODELAY, (char *)&true_bool, sizeof(true_bool));
+			if (err) {
+				printf("WARNING setsockopt() to disable nagle failed  WSA error = %d.\n", WSAGetLastError());		
+			};//if
 
 			newClient->socket = newsock;
 			newClient->conectedFlag = true;
@@ -414,12 +434,9 @@ class socketServer{
 	};// 
 
 	inline void storeIncommingRequests(std::set<client *> * clients){
-		char recv_buffer[BUFFER_SIZE];
-		int received;
+		
 		for (auto x: *clients) {
-			
-			int received = recv(x->socket, recv_buffer, BUFFER_SIZE, 0);
-			std::cout<<"Socket "<<x->socket<<" sent: "<<received<<" bytes msg: "<<recv_buffer<<std::endl;
+			x->readData();
 		}
 	}
 	    
@@ -438,10 +455,12 @@ int main(){
 
     socketServer server;
 	server.start(PORT_NUMBER);
+
 	while(!Terminate){				
        // printf("Main thread.\n");
 		Sleep(5);
 	};//while
+	
 	server.stop();
 	std::cout<<"Bye!"<<std::endl;
 	return ERR_NONE;
