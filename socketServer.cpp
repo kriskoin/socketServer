@@ -26,11 +26,13 @@ typedef struct sockaddr		SOCKADDR;
 typedef struct sockaddr_in	SOCKADDR_IN;
 typedef SOCKADDR *			LPSOCKADDR;
 
-#define MAX_CONNECTIONS 15
+#define MAX_CONNECTIONS 15d 
 #define PORT_NUMBER		7777
 #define SOCKET_TTL 15000 //15seg before close an inactive socket
 
-#define BUFFER_SIZE		3 // size of the read buffer for recv function
+#define BUFFER_SIZE		5 // size of the read buffer for the recv function
+                          // using small value to ensure the procotol works 
+						  //properly  
 
 #define INVALID_SOCKET		(-1)
 #define SOCKET_ERROR		(-1)
@@ -140,8 +142,11 @@ class packet{
 
 class client{
 	public:
+		unsigned int ttl;//time to live
+
 		SOCKET_DESCRIPTOR socket; //sock descriptor
-		bool conectedFlag = false;
+		bool connected = false;
+		std::string msg;
 		client()=default;
 		~client(){
 			//close socket
@@ -160,25 +165,18 @@ class client{
 			
 		    memset(buffer ,0 , BUFFER_SIZE);	//clear the variable
 			received =  recv(socket , buffer , BUFFER_SIZE , 0);
+			std::cout<<" >>>> received: "<<received<<"<<<<<<<<"<<std::endl;
 			if(received){
-					packetSize=packetSize+received;
-					msg.append(buffer);
 				
-				if(buffer[received-1]=='\n'){
-					std::cout<<"Fin detectado "<<std::endl;
-					std::cout<<"Socket: "<< socket<<" envio: "<<msg<<" bytes: "<<packetSize<<std::endl;	
-					packetSize=0;
-					msg.clear();
-				}
 			}
-			
+
 		}
 
 	private:
 		std::queue< packet *> inPackets;
-		std::string msg;
-		int packetSize=0;
-};
+		
+		int packetSize = 0;
+	};
 
 class socketServer{
 	public:
@@ -301,14 +299,14 @@ class socketServer{
 
 			fcntl(newsock, F_SETFL, O_NONBLOCK);//non blocking socket
 			//TODO: nagle stuff
-			bool true_bool = true;
-			int err = setsockopt(newsock, IPPROTO_TCP, TCP_NODELAY, (char *)&true_bool, sizeof(true_bool));
-			if (err) {
-				printf("WARNING setsockopt() to disable nagle failed  WSA error = %d.\n", WSAGetLastError());		
-			};//if
+			//bool true_bool = true;
+			//int err = setsockopt(newsock, IPPROTO_TCP, TCP_NODELAY, (char *)&true_bool, sizeof(true_bool));
+			//if (err) {
+			//	printf("WARNING setsockopt() to disable nagle failed  WSA error = %d.\n", WSAGetLastError());		
+			//};//if
 
 			newClient->socket = newsock;
-			newClient->conectedFlag = true;
+			newClient->connected = true;
 			
 			EnterCriticalSection(&clientsLock);
 			EnterCriticalSection(&descriptorsLock);	
@@ -339,7 +337,7 @@ class socketServer{
 			bool exitFlag= false;
 			
 			do{
-
+				shutdownDiscClients();
 				if(conections){		
 					zstruct(tv);
 					tv.tv_sec =0;
@@ -425,7 +423,7 @@ class socketServer{
 		std::set<client *> clients;
 		EnterCriticalSection(&clientsLock);
 		for (auto x: clientsMap) {
-			if(FD_ISSET(x.first,read_fds)){		
+			if(FD_ISSET(x.first,read_fds) && x.second->connected){		
 				clients.insert(x.second);
 			}
 		}
@@ -433,12 +431,68 @@ class socketServer{
 		return clients;
 	};// 
 
-	inline void storeIncommingRequests(std::set<client *> * clients){
+    //remove disconnected clients
+	inline void shutdownDiscClients (){
 		
-		for (auto x: *clients) {
-			x->readData();
+		EnterCriticalSection(&clientsLock);
+		EnterCriticalSection(&descriptorsLock);
+		auto it = clientsMap.cbegin();
+		while (it != clientsMap.cend())
+		{
+			if(!it->second->connected){		
+				std::cout<<"Socket: "<< it->first<<" disconnected "<<std::endl;	
+				FD_CLR(it->first, &masterDesciptors); 		        
+				delete (it->second);
+				it = clientsMap.erase(it);
+				conections--;
+			}else{
+				++it;
+			}
+		}
+		LeaveCriticalSection(&descriptorsLock);
+		LeaveCriticalSection(&clientsLock);	
+		
+	};//
+
+	inline void storeIncommingRequests(std::set<client *> * clients){
+		char buffer[BUFFER_SIZE];	
+		int received;
+		for (auto c: *clients) {
+			received = 0;
+			memset(buffer ,0 , BUFFER_SIZE);
+			received =  recv(c->socket , buffer , BUFFER_SIZE , 0);
+			switch (received){
+				case -1: 
+					//error
+					break;
+				case 0: 
+					//end close the connection
+					handleLostConecction(c);
+					break;
+				
+				default:
+				    //we get data
+					c->msg.append(buffer);
+					c->ttl=0;
+					if(buffer[received-1]=='\n'){
+						std::cout<<"Fin detectado "<<std::endl;
+						std::cout<<"Socket: "<< socket<<" sent: "<<c->msg<<std::endl;	
+						c->msg.clear();
+					}
+					break;
+			}
 		}
 	}
+
+	void handleLostConecction(client* lostClient){
+		if (!lostClient->ttl){
+			lostClient->ttl=GetTickCount()+SOCKET_TTL;
+		}else{
+			if(GetTickCount()>lostClient->ttl){
+				lostClient->connected =false;				
+			};//if
+		};//if
+	};
 	    
 };
 

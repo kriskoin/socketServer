@@ -1,4 +1,4 @@
 # socketServer
 a test socket server
 # compile
-g++ -lpthread socketServer.cpp -o server
+g++ -std=c++11 -lpthread socketServer.cpp -o server
