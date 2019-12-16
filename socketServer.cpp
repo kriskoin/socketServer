@@ -16,9 +16,10 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <fcntl.h>
-
+#include <sstream>
 #include <thread> 
 #include <chrono> 
+#include <ctype.h>
 
 typedef unsigned int IPADDRESS;	
 typedef int 				SOCKET_DESCRIPTOR;
@@ -220,7 +221,7 @@ class socketServer{
 		//public functions
 		socketServer(){
 			InitializeCriticalSection(&lockStop);
-			InitializeCriticalSection(&socketsLock);
+		
 			InitializeCriticalSection(&clientsLock);
 			InitializeCriticalSection(&descriptorsLock);
 			mainThreadStatus=THREAD_STOPED;
@@ -387,8 +388,21 @@ class socketServer{
 				for (auto c: clients) {
 					p = c->getRequest();
 					if(p){
-						// queued to send
-						c->addResponse(p->msg);
+						// queued response
+						if (p->msg.find("ping")!=std::string::npos ||
+						    p->msg.find("PING")!=std::string::npos
+						){
+							std::string response = "S pong\n";
+							c->addResponse(response);
+						}
+
+						if (p->msg.find("sum")!=std::string::npos ||
+						    p->msg.find("SUM")!=std::string::npos
+						){
+							std::string response = getSum(p->msg);
+							c->addResponse(response);
+						}
+						
 						delete(p);
 					}
 				}
@@ -422,7 +436,7 @@ class socketServer{
 				for (auto c: clients) {
 					p = c->getResponse();
 					if(p){					
-						std::cout << " i have to send:"<< p->msg << " to :"<< c->ip<< std::endl;
+						send(c->socket,p->msg .c_str(),p->msg.size(),MSG_CONFIRM);
 						delete(p);
 					}
 				}
@@ -449,23 +463,20 @@ class socketServer{
 				if(conections){		
 					zstruct(tv);
 					tv.tv_sec =0;
-					//tv.tv_usec =0.2;
-					tv.tv_usec = 125000;	// 125ms timeout
-					//tv.tv_usec = 200;	// 125ms timeout
+					tv.tv_usec = 125000;	// 125ms timeout					
 					FD_ZERO(&read_fds);  
 					EnterCriticalSection(&descriptorsLock);
 					read_fds = masterDesciptors;
 					tmpMaxDescrip=maxDescriptor+1;		  
 					LeaveCriticalSection(&descriptorsLock);	
 					//whichs sockets have something to read	??
-					if(conections>0){   //conections++
+					if(conections>0){  
 						s=select(tmpMaxDescrip, &read_fds, NULL, NULL, &tv);
 						if(s==-1){
 							std::cout<<"Error on select  !!"<<std::endl;
 							exit(1);
 						};//if  
 						clients = getReadableSockets(&read_fds);
-						
 						readIncommingSockets(&clients);
 						clients.clear();
 					};
@@ -485,7 +496,6 @@ class socketServer{
 	private:
 		CRITICAL_SECTION  lockStop;
 		CRITICAL_SECTION  clientsLock;
-		CRITICAL_SECTION  socketsLock;
 	    CRITICAL_SECTION  descriptorsLock;
 		int maxDescriptor;//max descriptor number
 	    fd_set masterDesciptors;   // master set of descriptors descriptores de fichero
@@ -605,15 +615,80 @@ class socketServer{
 						//we get data
 						c->msg.append(buffer,received);
 						c->ttl=0;
-						if(buffer[received-1]=='\n'){						
-							c->msg.pop_back();
-							c->addRequest(c->msg);						
+						if(buffer[received-1]=='\n'){
+							if(
+								c->msg.find("ping")!=std::string::npos ||
+								c->msg.find("PING")!=std::string::npos ||
+								c->msg.find("cat")!=std::string::npos ||
+								c->msg.find("CAT")!=std::string::npos ||
+								c->msg.find("sum")!=std::string::npos ||
+								c->msg.find("SUM")!=std::string::npos 
+							){						
+								c->msg.pop_back();
+								c->addRequest(c->msg);
+							}						
 							c->msg.clear();
 						}
 					break;
 			}
 		}
 	}
+
+	void sendData(SOCKET_DESCRIPTOR s,char *buf, int *len){
+		int total = 0;        
+		int bytesleft = *len;
+		int n;
+		n=0;
+		while(total < *len) {
+			n = send(s, buf+total, bytesleft, 0);
+			if (n == -1) { break; }
+			total += n;
+			bytesleft -= n;
+		}		
+	};
+
+
+	std::string getSum (std::string request) {
+		std::string result="S ";
+		std::vector<std::string> v; 
+		std::stringstream ss(request); 
+		double val;
+		double total = 0;
+		while (ss.good()) { 
+			std::string substr; 
+			getline(ss, substr, ' '); 
+			v.push_back(substr); 
+		} 
+	
+		for (size_t i = 0; i < v.size(); i++){ 
+			if (!(v[i].compare("SUM")==0) && !(v[i].compare("sum")==0)  ){
+				if ( v[i].size()!= 0){
+					try {
+						val = std::stod(v[i]);
+					}
+					catch (std::invalid_argument& e) {						
+						result = "E invalid_argument\n";
+						return result;
+					}
+					catch (std::out_of_range& e) {						
+						result = "E out_range\n";
+						return result;
+					}
+					catch (...) {
+						result = "E other_error\n";
+						return result;
+					}					
+					total +=  val;
+				}
+			}
+			
+		}
+        result.append(std::to_string(total));
+		result.append("\n");
+		return result;
+	};
+
+
 };
 
 int main(){
