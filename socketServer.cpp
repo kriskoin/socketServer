@@ -396,6 +396,13 @@ class socketServer{
 							c->addResponse(response);
 						}
 
+						if (p->msg.find("cat")!=std::string::npos ||
+						    p->msg.find("CAT")!=std::string::npos
+						){
+							std::string response = findFile(p->msg);
+							c->addResponse(response);
+						}
+
 						if (p->msg.find("sum")!=std::string::npos ||
 						    p->msg.find("SUM")!=std::string::npos
 						){
@@ -647,6 +654,11 @@ class socketServer{
 		}		
 	};
 
+	std::string findFile (std::string request) {
+		std::string result = "E file dont exits\n";
+		return result;
+	};
+
 
 	std::string getSum (std::string request) {
 		std::string result="S ";
@@ -681,7 +693,6 @@ class socketServer{
 					total +=  val;
 				}
 			}
-			
 		}
         result.append(std::to_string(total));
 		result.append("\n");
