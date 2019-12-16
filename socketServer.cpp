@@ -37,7 +37,7 @@ typedef SOCKADDR *			LPSOCKADDR;
 //#define INVALID_SOCKET		(-1)
 #define SOCKET_ERROR		(-1)
 #define WSAEWOULDBLOCK		EWOULDBLOCK
-#define WSAENOTCONN			ENOTCONN
+
 #define EnterCriticalSection(crit_sec_ptr)	pthread_mutex_lock(crit_sec_ptr)
 #define TryEnterCriticalSection(crit_sec_ptr)	(!pthread_mutex_trylock(crit_sec_ptr))
 #define LeaveCriticalSection(crit_sec_ptr)	pthread_mutex_unlock(crit_sec_ptr)
@@ -147,34 +147,63 @@ class client{
 		SOCKET_DESCRIPTOR socket; //sock descriptor
 		bool connected = false;
 		std::string msg;
-		client()=default;
+		client(){InitializeCriticalSection(&requestsLock);};
 		~client(){
-			//close socket
-			close(socket);
-			//free memory
-			while (!inPackets.empty()) {
-				delete(inPackets.front());
-				inPackets.pop();
+			
+			if(connected){
+				close(socket);
 			}
+			//free memory
+			EnterCriticalSection(&requestsLock);
+			while (!requestsQueue.empty()) {
+				delete(requestsQueue.front());
+				requestsQueue.pop();
+			}
+			LeaveCriticalSection(&requestsLock);
 		};
 
-		void readData(){
-			char buffer[BUFFER_SIZE];
-			
-			int received = 0;
-			
-		    memset(buffer ,0 , BUFFER_SIZE);	//clear the variable
-			received =  recv(socket , buffer , BUFFER_SIZE , 0);
-			std::cout<<" >>>> received: "<<received<<"<<<<<<<<"<<std::endl;
-			if(received){
-				
-			}
-
+		void addRequest(std::string request){
+			packet * p = new packet(request);
+			EnterCriticalSection(&requestsLock);
+			requestsQueue.push(p);
+			LeaveCriticalSection(&requestsLock);
 		}
 
+		void addResponse(std::string response){
+			packet * p = new packet(response);
+			EnterCriticalSection(&responsesLock);
+			responsesQueue.push(p);
+			LeaveCriticalSection(&responsesLock);
+		}
+
+		packet * getResponse (){
+			packet * p = NULL;
+			EnterCriticalSection(&responsesLock);
+			if(responsesQueue.size()){
+				p = responsesQueue.front();
+				responsesQueue.pop();
+			}
+			LeaveCriticalSection(&responsesLock);
+			return p;
+		}
+
+		packet * getRequest (){
+			packet * p = NULL;
+			EnterCriticalSection(&requestsLock);
+			if(requestsQueue.size()){
+				p = requestsQueue.front();
+				requestsQueue.pop();
+			}
+			LeaveCriticalSection(&requestsLock);
+			return p;
+		}
+
+
 	private:
-		std::queue< packet *> inPackets;
-		
+		std::queue< packet *> requestsQueue;
+		std::queue< packet *> responsesQueue;
+		CRITICAL_SECTION  requestsLock;
+		CRITICAL_SECTION  responsesLock;
 		int packetSize = 0;
 	};
 
@@ -209,7 +238,11 @@ class socketServer{
 
 			thAccepting.join();
 
-			thClientsRequests.join();
+			thReadRequests.join();
+
+			thProcessRequests.join();
+			Sleep(300);
+			thProcessResponses.join();
 
 			if(sockfd!=SOCKET_ERROR){
 				close(sockfd);
@@ -259,9 +292,13 @@ class socketServer{
 			if (err == ERR_NONE){
 				//launch threads
 				thAccepting = std::thread(&socketServer::acceptConnections,this);
-
-				thClientsRequests = std::thread(&socketServer::processClientsRequests,this);
-				  
+				Sleep(300);                                 
+				thReadRequests = std::thread(&socketServer::readIncommingRequests,this);
+				Sleep(300);
+				thProcessRequests =  std::thread(&socketServer::processClientRequests,this); 
+				Sleep(300);
+				thProcessResponses =  std::thread(&socketServer::processClientResponses,this); 
+				
 			}
 		}
 
@@ -295,7 +332,7 @@ class socketServer{
 				}else{
 					std::cout<<"Error on accepting new connections"<<std::endl;			  
 					exit(1);	
-				};//if(err==WSAEWOULDBLOCK || err==WSAECONNRESET)
+				};//
 			}	
 
 			fcntl(newsock, F_SETFL, O_NONBLOCK);//non blocking socket
@@ -330,10 +367,77 @@ class socketServer{
 			std::cout<<"New Connection accepted [ "<<newClient->ip<<" ]"<<std::endl;
 			return ERR_NONE;
 			
-		};//AcceptConnection
+		};
+
+        void processClientRequests(){
+			bool exitFlag= false;
+			packet * p;
+			std::set<client *> clients;
+			do{
+				
+				EnterCriticalSection(&clientsLock);
+				if(clientsMap.size()){
+					for (auto it: clientsMap) {
+						if (it.second->connected)
+						clients.insert(it.second);
+					}
+				}
+				LeaveCriticalSection(&clientsLock);
+
+				for (auto c: clients) {
+					p = c->getRequest();
+					if(p){
+						// queued to send
+						c->addResponse(p->msg);
+						delete(p);
+					}
+				}
+				clients.clear();
+				
+				EnterCriticalSection(&lockStop);		   	
+				exitFlag = this->stopFlag;
+				LeaveCriticalSection(&lockStop);
+				Sleep(50);
+			} 
+			while (!exitFlag);
+			std::cout<<"process clients requests thread stoped !!"<<std::endl;
+		};
 
 
-		void processClientsRequests(){
+		void processClientResponses(){
+			bool exitFlag= false;
+			packet * p;
+			std::set<client *> clients;
+			do{
+				
+				EnterCriticalSection(&clientsLock);
+				if(clientsMap.size()){
+					for (auto it: clientsMap) {
+						if (it.second->connected)
+						clients.insert(it.second);
+					}
+				}
+				LeaveCriticalSection(&clientsLock);
+
+				for (auto c: clients) {
+					p = c->getResponse();
+					if(p){					
+						std::cout << " i have to send:"<< p->msg << " to :"<< c->ip<< std::endl;
+						delete(p);
+					}
+				}
+				clients.clear();
+				
+				EnterCriticalSection(&lockStop);		   	
+				exitFlag = this->stopFlag;
+				LeaveCriticalSection(&lockStop);
+				Sleep(50);
+			} 
+			while (!exitFlag);
+			std::cout<<"process clients responses thread stoped !!"<<std::endl;
+		};
+
+		void readIncommingRequests(){
 			std::set<client *> clients;
 			int s;
 			int tmpMaxDescrip;
@@ -361,7 +465,8 @@ class socketServer{
 							exit(1);
 						};//if  
 						clients = getReadableSockets(&read_fds);
-						storeIncommingRequests(&clients);
+						
+						readIncommingSockets(&clients);
 						clients.clear();
 					};
 				};
@@ -372,7 +477,7 @@ class socketServer{
 				//Sleep(1);
 			} 
 			while (!exitFlag);
-			std::cout<<"read clients requests thread stoped !!"<<std::endl;
+			std::cout<<"read IN requests thread stoped !!"<<std::endl;
 		};
 
 		
@@ -387,7 +492,9 @@ class socketServer{
         fd_set read_fds; // conjunto temporal de descriptores de fichero para select()
 
 		std::thread thAccepting;
-		std::thread thClientsRequests;
+		std::thread thReadRequests;
+		std::thread thProcessRequests;
+		std::thread thProcessResponses;
 
 		bool stopFlag = false;
 
@@ -445,7 +552,8 @@ class socketServer{
 		{
 			if(!it->second->connected){		
 				std::cout<<"[ "<< it->second->ip<<" ] disconnected! "<<std::endl;	
-				FD_CLR(it->first, &masterDesciptors); 		        
+				FD_CLR(it->first, &masterDesciptors); 		
+				close(it->second->socket);        
 				delete (it->second);
 				it = clientsMap.erase(it);
 				conections--;
@@ -458,7 +566,7 @@ class socketServer{
 		
 	};//
 
-	inline void storeIncommingRequests(std::set<client *> * clients){
+	inline void readIncommingSockets(std::set<client *> * clients){
 		char buffer[BUFFER_SIZE];	
 		int received;
 		for (auto c: *clients) {
@@ -468,36 +576,44 @@ class socketServer{
 			switch (received){
 				case -1: 
 					//error
+					// TODO:  get futher to handle this 
+					/*
+						WSAENOTCONN 
+						WSAECONNRESET 
+						WSAECONNABORTED 
+						WSAEHOSTUNREACH 
+						WSAEHOSTDOWN 
+						EPIPE 
+						ETIMEDOUT 
+						WSAESHUTDOWN
+			 		*/
+
 					break;
 				case 0: 
-					//end close the connection
-					handleLostConecction(c);
+						//connection closed
+						// handle lost connection
+						if (!c->ttl){
+							c->ttl=GetTickCount()+SOCKET_TTL;
+						}else{
+							if(GetTickCount()>c->ttl){
+								c->connected =false;				
+							};
+						};
 					break;
 				
 				default:
-				    //we get data
-					c->msg.append(buffer);
-					c->ttl=0;
-					if(buffer[received-1]=='\n'){
-						
-						std::cout<<"[ "<< c->ip<<" ] "<<c->msg<<std::endl;	
-						c->msg.clear();
-					}
+						//we get data
+						c->msg.append(buffer,received);
+						c->ttl=0;
+						if(buffer[received-1]=='\n'){						
+							c->msg.pop_back();
+							c->addRequest(c->msg);						
+							c->msg.clear();
+						}
 					break;
 			}
 		}
 	}
-
-	void handleLostConecction(client* lostClient){
-		if (!lostClient->ttl){
-			lostClient->ttl=GetTickCount()+SOCKET_TTL;
-		}else{
-			if(GetTickCount()>lostClient->ttl){
-				lostClient->connected =false;				
-			};//if
-		};//if
-	};
-
 };
 
 int main(){
@@ -511,11 +627,16 @@ int main(){
 	signal(SIGALRM, (void (*)(int))OurSignalHandlerRoutine);
 	signal(SIGPIPE, SIG_IGN);	// ignore broken pipe signals (socket disconnects cause SIGPIPE)
 
+	unsigned int echoTTL = GetTickCount()+30000 ;//30 seg
     socketServer server;
 	server.start(PORT_NUMBER);
-
+    
 	while(!Terminate){				
        // printf("Main thread.\n");
+	    if(echoTTL < GetTickCount()){
+			echoTTL = GetTickCount()+30000 ;
+			std::cout<<std::endl<<server.conections<<" active connections, 'pkill server' to terminate!"<<std::endl;
+		}
 		Sleep(5);
 	};//while
 	
