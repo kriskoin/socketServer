@@ -26,15 +26,15 @@ typedef struct sockaddr		SOCKADDR;
 typedef struct sockaddr_in	SOCKADDR_IN;
 typedef SOCKADDR *			LPSOCKADDR;
 
-#define MAX_CONNECTIONS 15d 
+#define MAX_CONNECTIONS 25
 #define PORT_NUMBER		7777
-#define SOCKET_TTL 15000 //15seg before close an inactive socket
+#define SOCKET_TTL 5000 // 5 seg before close an inactive socket
 
 #define BUFFER_SIZE		5 // size of the read buffer for the recv function
                           // using small value to ensure the procotol works 
 						  //properly  
 
-#define INVALID_SOCKET		(-1)
+//#define INVALID_SOCKET		(-1)
 #define SOCKET_ERROR		(-1)
 #define WSAEWOULDBLOCK		EWOULDBLOCK
 #define WSAENOTCONN			ENOTCONN
@@ -143,7 +143,7 @@ class packet{
 class client{
 	public:
 		unsigned int ttl;//time to live
-
+		std::string ip;
 		SOCKET_DESCRIPTOR socket; //sock descriptor
 		bool connected = false;
 		std::string msg;
@@ -180,10 +180,9 @@ class client{
 
 class socketServer{
 	public:
-		//public variables
 	   
 	    SOCKET_DESCRIPTOR sockfd; //sock descriptor
-        SOCKADDR_IN my_addr;
+		SOCKADDR_IN my_addr;
 		int mainThreadStatus;
 		int readThreadStatus;
 	    
@@ -212,7 +211,7 @@ class socketServer{
 
 			thClientsRequests.join();
 
-			if(sockfd!=INVALID_SOCKET){
+			if(sockfd!=SOCKET_ERROR){
 				close(sockfd);
 				std::cout<<"Socket: "<< sockfd<<" closed"<<std::endl;
 			};
@@ -242,7 +241,9 @@ class socketServer{
 			bool exitFlag= false;
 			
 			do{
-				acceptNewClients();
+				if( this->conections < MAX_CONNECTIONS){
+					acceptNewClients();
+				}
 				EnterCriticalSection(&lockStop);		   	
 				exitFlag = this->stopFlag;
 				LeaveCriticalSection(&lockStop);
@@ -286,7 +287,7 @@ class socketServer{
 
 			newsock=accept(sockfd, (sockaddr *)&dest_addr, (unsigned *)&size);
 			
-			if(newsock==INVALID_SOCKET){		
+			if(newsock==SOCKET_ERROR){		
 				int err = WSAGetLastError();				
 				if (err == WSAEWOULDBLOCK || err == WSAECONNRESET) {
 					// Nobody is ready to connect yet.
@@ -307,6 +308,9 @@ class socketServer{
 
 			newClient->socket = newsock;
 			newClient->connected = true;
+			char str[100];
+		    sprintf(str, "%d.%d.%d.%d", (dest_addr.sin_addr.s_addr) & 255,(dest_addr.sin_addr.s_addr>>8) & 255,(dest_addr.sin_addr.s_addr>>16) & 255,(dest_addr.sin_addr.s_addr>>24) & 255);
+			newClient->ip.assign(str);
 			
 			EnterCriticalSection(&clientsLock);
 			EnterCriticalSection(&descriptorsLock);	
@@ -323,7 +327,7 @@ class socketServer{
 			LeaveCriticalSection(&descriptorsLock);
 			LeaveCriticalSection(&clientsLock);
 					
-			std::cout<<"New Connection detected"<<std::endl;
+			std::cout<<"New Connection accepted [ "<<newClient->ip<<" ]"<<std::endl;
 			return ERR_NONE;
 			
 		};//AcceptConnection
@@ -392,11 +396,11 @@ class socketServer{
 		ErrorType createListenSocket(int portNumber){
 			   
 			sockfd = socket(AF_INET, SOCK_STREAM, 0); // ¡Comprobar errores!
-			if(sockfd==INVALID_SOCKET){	
+			if(sockfd==SOCKET_ERROR){	
 				std::cout<<"Error creating socket"<<std::endl;
 				exit(1);
 			}
-			std::cout<<"Socket "<<sockfd<<" created" <<std::endl;
+			
 
 			fcntl(sockfd, F_SETFL, O_NONBLOCK);//non blocking socket
 			my_addr.sin_family = AF_INET;         // Ordenación de máquina
@@ -404,17 +408,17 @@ class socketServer{
 			my_addr.sin_addr.s_addr = INADDR_ANY; // Rellenar con mi dirección IP
 			memset(&(my_addr.sin_zero), '\0', 8); //
 
-			if(bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr))==INVALID_SOCKET){				
+			if(bind(sockfd, (struct sockaddr *)&my_addr, sizeof(struct sockaddr))==SOCKET_ERROR){				
 				std::cout<< "Error on binding"<<std::endl;
 				exit(1);
 			};
 			
-			if(listen(sockfd, 10)==INVALID_SOCKET){
+			if(listen(sockfd, 10)==SOCKET_ERROR){
 				std::cout<< "Error on listing"<<std::endl;
 				exit(1);
 			};//if
 			
-			std::cout<<"Socket "<<sockfd<<" listing on port: "<< portNumber <<std::endl;
+			std::cout<<" Listing on port: "<< portNumber <<std::endl;
 			return ERR_NONE;
 		};//createListenSocket
 
@@ -440,7 +444,7 @@ class socketServer{
 		while (it != clientsMap.cend())
 		{
 			if(!it->second->connected){		
-				std::cout<<"Socket: "<< it->first<<" disconnected "<<std::endl;	
+				std::cout<<"[ "<< it->second->ip<<" ] disconnected! "<<std::endl;	
 				FD_CLR(it->first, &masterDesciptors); 		        
 				delete (it->second);
 				it = clientsMap.erase(it);
@@ -475,8 +479,8 @@ class socketServer{
 					c->msg.append(buffer);
 					c->ttl=0;
 					if(buffer[received-1]=='\n'){
-						std::cout<<"Fin detectado "<<std::endl;
-						std::cout<<"Socket: "<< socket<<" sent: "<<c->msg<<std::endl;	
+						
+						std::cout<<"[ "<< c->ip<<" ] "<<c->msg<<std::endl;	
 						c->msg.clear();
 					}
 					break;
@@ -493,7 +497,7 @@ class socketServer{
 			};//if
 		};//if
 	};
-	    
+
 };
 
 int main(){
