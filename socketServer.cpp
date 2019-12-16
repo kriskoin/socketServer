@@ -442,9 +442,15 @@ class socketServer{
 
 				for (auto c: clients) {
 					p = c->getResponse();
-					if(p){					
-						send(c->socket,p->msg .c_str(),p->msg.size(),MSG_CONFIRM);
-						delete(p);
+					if(p){
+						if(p->msg.find("SENDFILE")!=std::string::npos){
+							//send a file
+							std::string fileName = p->msg.substr(p->msg.find(" ")+1);
+							sendFile(c->socket,fileName);
+						}else{					
+							send(c->socket,p->msg .c_str(),p->msg.size(),MSG_CONFIRM);
+							delete(p);
+						}
 					}
 				}
 				clients.clear();
@@ -516,6 +522,26 @@ class socketServer{
 		bool stopFlag = false;
 
 		std::map<SOCKET_DESCRIPTOR,client *> clientsMap;
+
+		void sendFile (SOCKET_DESCRIPTOR s,std::string fileName){
+			FILE * file_to_send;
+			int ch;
+			char toSEND[1];
+			file_to_send = fopen (fileName.c_str(),"r");
+			fseek (file_to_send, 0, SEEK_END);     
+    		rewind(file_to_send);
+			toSEND[0]='S';
+			send(s, toSEND, 1, 0);
+			toSEND[0]=' ';
+			send(s, toSEND, 1, 0);
+			while((ch=getc(file_to_send))!=EOF){
+				toSEND[0] = ch;
+				send(s, toSEND, 1, 0);
+			}
+			fclose(file_to_send);
+			toSEND[0]='\n';
+			send(s, toSEND, 1, 0);
+		};
 
 		ErrorType createListenSocket(int portNumber){
 			   
@@ -656,6 +682,24 @@ class socketServer{
 
 	std::string findFile (std::string request) {
 		std::string result = "E file dont exits\n";
+		std::string fileName = request.substr(request.find(" ")+1);
+		FILE * pFile;
+		pFile = fopen (fileName.c_str(),"r");
+		if (pFile!=NULL)
+		{
+			//just confirm that file exits
+			//it 'll transmit with output thread
+			fclose (pFile);
+			result="SENDFILE ";
+			result.append(fileName);
+			return result;
+		}else{
+			result="E cannot access ";
+			result.append(fileName);
+			result.append("\n");
+			return result;
+		}
+		
 		return result;
 	};
 
